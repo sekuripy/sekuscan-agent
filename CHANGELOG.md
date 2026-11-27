@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3
+
+- Windows: `cmd:` credential commands kept their paths (POSIX parsing ate
+  the backslashes of `C:\` paths); Windows now parses its own command line,
+  still without a shell.
+- Every release is tested on Ubuntu 22.04 and 24.04 (x86_64 and arm64),
+  macOS and Windows, with Python 3.10 and 3.14.
+
 ## 0.2.2
 
 Changes from a second external review.

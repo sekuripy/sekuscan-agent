@@ -16,8 +16,8 @@ All connections are outbound from the agent; nothing connects in.
 
 | | |
 |---|---|
-| OS | Linux x86_64. CI runs on `ubuntu-24.04` x86_64; other platforms, arm64 included, are not tested. |
-| Python | 3.10 to 3.12 tested; 3.10 or newer declared. |
+| OS | Linux, macOS and Windows, x86_64 and arm64: anywhere Playwright's Chromium runs. Every release is tested on Ubuntu 22.04 and 24.04 (x86_64 and arm64), macOS and Windows. Anything else with Docker: the container image. |
+| Python | 3.10 or newer (every release is tested on 3.10 and 3.14). |
 | Browser | Chromium: `playwright install --with-deps chromium`, or use the container image, which includes it. |
 | Network | Outbound HTTPS (443) to `api.sekuscan.com`, and reachability to the targets. Nothing inbound. |
 | Resources | Guidance, not a guarantee: about 1-2 GB RAM and 2 CPUs; a few hundred MB of disk for reports. (An idle headless Chromium with one blank page measured about 0.6 GB resident; real applications use more.) |
@@ -33,9 +33,9 @@ the wheel, `requirements.lock`, `SHA256SUMS` and the SBOM
 
 ```
 sha256sum -c SHA256SUMS
-gh attestation verify sekuscan_agent-0.2.2-py3-none-any.whl -R sekuripy/sekuscan-agent
+gh attestation verify sekuscan_agent-0.2.3-py3-none-any.whl -R sekuripy/sekuscan-agent
 gh attestation verify requirements.lock -R sekuripy/sekuscan-agent
-pip install -c requirements.lock sekuscan_agent-0.2.2-py3-none-any.whl
+pip install -c requirements.lock sekuscan_agent-0.2.3-py3-none-any.whl
 playwright install --with-deps chromium
 ```
 
@@ -58,7 +58,7 @@ mkdir report && chown 1001 report     # pwuser's uid in the image; or see below
 docker run --rm --ipc=host -e SEKUSCAN_API_KEY \
   --security-opt seccomp=seccomp_profile.json \
   -v "$PWD/report:/report" \
-  ghcr.io/sekuripy/sekuscan-agent:v0.2.2 run --engine https://api.sekuscan.com \
+  ghcr.io/sekuripy/sekuscan-agent:v0.2.3 run --engine https://api.sekuscan.com \
   --target https://app.example.com/ --verify-target-tls \
   --browser-sandbox on --out /report
 ```
@@ -106,9 +106,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: |
-          base=https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.2
-          curl -fsSLO $base/requirements.lock -O $base/sekuscan_agent-0.2.2-py3-none-any.whl
-          pip install -c requirements.lock sekuscan_agent-0.2.2-py3-none-any.whl
+          base=https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.3
+          curl -fsSLO $base/requirements.lock -O $base/sekuscan_agent-0.2.3-py3-none-any.whl
+          pip install -c requirements.lock sekuscan_agent-0.2.3-py3-none-any.whl
           playwright install --with-deps chromium
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: ./start-the-app-under-test.sh &
