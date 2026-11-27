@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6
+
+- The container image is also tagged `latest`, which always points to the
+  newest release.
+
 ## 0.2.5
 
 Changes from a clean-machine install and scan, done the way a customer would.

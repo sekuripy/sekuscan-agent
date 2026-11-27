@@ -31,7 +31,7 @@ Linux and macOS:
 ```
 sudo apt install python3-venv libatomic1    # Ubuntu and Debian only
 python3 -m venv ~/sekuscan-agent
-~/sekuscan-agent/bin/pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.5/sekuscan_agent-0.2.5-py3-none-any.whl
+~/sekuscan-agent/bin/pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.6/sekuscan_agent-0.2.6-py3-none-any.whl
 ~/sekuscan-agent/bin/playwright install --with-deps chromium
 ```
 
@@ -39,7 +39,7 @@ Windows (PowerShell):
 
 ```
 py -m venv sekuscan-agent
-sekuscan-agent\Scripts\pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.5/sekuscan_agent-0.2.5-py3-none-any.whl
+sekuscan-agent\Scripts\pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.6/sekuscan_agent-0.2.6-py3-none-any.whl
 sekuscan-agent\Scripts\playwright install chromium
 ```
 
@@ -53,9 +53,11 @@ run a scan and write the report to `./report`:
 ```
 mkdir -p report
 docker run --rm --user "$(id -u):$(id -g)" -e SEKUSCAN_API_KEY -v "$PWD/report:/report" \
-  ghcr.io/sekuripy/sekuscan-agent:v0.2.5 run --engine https://api.sekuscan.com \
+  ghcr.io/sekuripy/sekuscan-agent:v0.2.6 run --engine https://api.sekuscan.com \
   --target https://app.example.com/ --verify-target-tls --out /report
 ```
+
+`ghcr.io/sekuripy/sekuscan-agent:latest` always points to the newest release.
 
 Inside Docker the browser runs without Chromium's own sandbox, and the
 container is the isolation. To have both, save
@@ -76,8 +78,8 @@ Download them next to the wheel and run:
 
 ```
 sha256sum -c --ignore-missing SHA256SUMS
-gh attestation verify sekuscan_agent-0.2.5-py3-none-any.whl -R sekuripy/sekuscan-agent
-pip install -c requirements.lock sekuscan_agent-0.2.5-py3-none-any.whl
+gh attestation verify sekuscan_agent-0.2.6-py3-none-any.whl -R sekuripy/sekuscan-agent
+pip install -c requirements.lock sekuscan_agent-0.2.6-py3-none-any.whl
 ```
 
 `gh` is the [GitHub CLI](https://cli.github.com/).
@@ -129,7 +131,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: |
-          pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.5/sekuscan_agent-0.2.5-py3-none-any.whl
+          pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.6/sekuscan_agent-0.2.6-py3-none-any.whl
           playwright install --with-deps chromium
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: ./start-the-app-under-test.sh &
