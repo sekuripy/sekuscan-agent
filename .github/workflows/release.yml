@@ -85,18 +85,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build and smoke-test the image before anything is pushed
+      - name: Build the amd64 image for the smoke test
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           load: true
-          tags: smoke:test
-      - name: The image runs and reports the tag's version
+          platforms: linux/amd64
+          tags: smoke:amd64
+      - name: Build the arm64 image for the smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          platforms: linux/arm64
+          tags: smoke:arm64
+      - name: Both images run and report the tag's version
         run: |
-          out="$(docker run --rm smoke:test --version)"
-          echo "$out"
-          case "$out" in *"${GITHUB_REF_NAME#v}"*) ;; *) echo "version does not match the tag $GITHUB_REF_NAME"; exit 1;; esac
+          for arch in amd64 arm64; do
+            out="$(docker run --rm --platform "linux/$arch" "smoke:$arch" --version)"
+            echo "$arch: $out"
+            case "$out" in *"${GITHUB_REF_NAME#v}"*) ;; *) echo "$arch version does not match the tag $GITHUB_REF_NAME"; exit 1;; esac
+          done
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
@@ -107,6 +118,7 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ env.IMAGE }}:${{ github.ref_name }}
           sbom: true
           provenance: mode=max

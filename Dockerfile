@@ -1,6 +1,6 @@
-# SekuScan agent image. The base is pinned to the Playwright release in
-# requirements.lock, so the browser build matches the library.
-FROM mcr.microsoft.com/playwright/python:v1.65.2-noble
+# SekuScan agent image, for linux/amd64 and linux/arm64. The base is the
+# Playwright release in requirements.lock, pinned by digest.
+FROM mcr.microsoft.com/playwright/python:v1.65.2-noble@sha256:38dd67fc654b56b3cba611e4c8eb71cd33750e1cd29eea2a5dc00b484817a75f
 
 COPY . /src
 # The image has no venv module; its own Playwright is in the system Python.

@@ -593,7 +593,34 @@ def clamp_capture(capture: Any, ceiling: int) -> Any:
 
 
 @_clean_terminal_output
-def run_agent(engine: str, api_key: str, target: str, scope: list[str],
+def _hard_margin_s() -> float:
+    # The env var exists for tests and can only shorten the documented margin.
+    try:
+        return min(float(os.environ.get("SEKUSCAN_MAX_SECONDS_HARD_MARGIN_S",
+                                        MAX_SECONDS_HARD_MARGIN_S)),
+                   float(MAX_SECONDS_HARD_MARGIN_S))
+    except ValueError:
+        return float(MAX_SECONDS_HARD_MARGIN_S)
+
+
+def run_agent(*args: Any, **kwargs: Any) -> int:
+    """`_run_agent` with the `--max-seconds` hard deadline enforced from the
+    first moment, run creation and setup included. The step-loop watchdog
+    takes over once it starts."""
+    import inspect
+    bound = inspect.signature(_run_agent).bind(*args, **kwargs)
+    max_seconds = bound.arguments.get("max_seconds")
+    early = (_ProgressWatchdog(0, hard_deadline=_ProgressWatchdog._clock()
+                               + max_seconds + _hard_margin_s()).start()
+             if max_seconds else None)
+    try:
+        return _run_agent(*args, _early_watchdog=early, **kwargs)
+    finally:
+        if early is not None:
+            early.stop()
+
+
+def _run_agent(engine: str, api_key: str, target: str, scope: list[str],
               profile: str = "default", out: str = "./runs/latest",
               risk: int = 1,
               max_depth: Optional[int] = None,
@@ -653,7 +680,8 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
               webhook_url: Optional[str] = None,
               webhook_format: str = "generic",
               pdf: bool = False,
-              user_agent: Optional[str] = None) -> int:
+              user_agent: Optional[str] = None,
+              _early_watchdog: Optional[_ProgressWatchdog] = None) -> int:
     if browser_sandbox not in ("auto", "on", "off"):
         print("error: --browser-sandbox must be auto, on or off", file=sys.stderr)
         return 2
@@ -661,6 +689,7 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
         print("error: --max-capture-bytes must be at least 1", file=sys.stderr)
         return 2
     run_started = time.monotonic()      # --max-seconds counts from here
+    hard_s = _hard_margin_s()
     os.makedirs(out, exist_ok=True)
     # The report/trace directory holds sensitive material (session values,
     # evidence), so it is chmod-ed explicitly: `mode=` on makedirs is umask-
@@ -1031,11 +1060,8 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
         except Exception:
             pass
 
-    try:
-        hard_s = float(os.environ.get("SEKUSCAN_MAX_SECONDS_HARD_MARGIN_S",
-                                      MAX_SECONDS_HARD_MARGIN_S))
-    except ValueError:
-        hard_s = float(MAX_SECONDS_HARD_MARGIN_S)
+    if _early_watchdog is not None:
+        _early_watchdog.stop()   # this one also kills the browser on expiry
     watchdog = _ProgressWatchdog(
         no_progress_s,
         # in the watchdog's own clock, minus what init has already used

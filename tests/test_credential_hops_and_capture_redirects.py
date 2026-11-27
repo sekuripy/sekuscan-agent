@@ -109,6 +109,23 @@ def test_browser_preflight_treats_non_credential_hop_as_offscope():
         == "http://b.test/x"
 
 
+def test_browser_preflight_refuses_a_chain_longer_than_it_checks():
+    from sekuscan.agent.browser import BrowserSession
+
+    hop = iter(range(100))
+    context = Mock()
+    context.request.get.side_effect = lambda *a, **k: Resp(302, "http://a.test/%d" % next(hop))
+    stub = NS(REDIRECT_STATUSES=(301, 302), MAX_NAV_REDIRECTS=10,
+              scope_origins=["http://a.test"], deny_substrings=[],
+              allow_subdomains=False, max_depth=None,
+              extra_headers={"Authorization": "x"},
+              credentials_allowed=lambda u: True, strict_egress=False,
+              _credential_headers_for=lambda u: {}, context=context)
+    refused = BrowserSession._offscope_hop(stub, Resp(302, "http://a.test/start"), "http://a.test/")
+    assert refused and refused.startswith("http://a.test/")
+    assert context.request.get.call_count == 9
+
+
 # pytest-style module-level functions are invisible to `unittest discover`;
 # see tests/pytest_style.py.
 from tests import pytest_style  # noqa: E402

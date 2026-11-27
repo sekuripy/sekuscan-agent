@@ -8,7 +8,7 @@ The engine runs on our side and is not in this repository.
 We publish this source so you can audit what runs in your infrastructure.
 The agent only makes outbound connections. Nothing connects to it.
 
-[Releases](https://github.com/sekuripy/sekuscan-agent/releases) ·
+[Latest release](https://github.com/sekuripy/sekuscan-agent/releases/latest) ·
 [Security model](https://sekuscan.com/security/) ·
 [sekuscan.com](https://sekuscan.com)
 
@@ -16,7 +16,7 @@ The agent only makes outbound connections. Nothing connects to it.
 
 | | |
 |---|---|
-| OS | Linux, macOS or Windows, on x86_64 or arm64. Every release is tested on Ubuntu 22.04 and 24.04 (x86_64 and arm64), macOS and Windows. Any other system that runs Docker can use the container image. |
+| OS | Linux, macOS or Windows, on x86_64 or arm64. Every release is tested on Ubuntu 22.04 and 24.04 (x86_64 and arm64), macOS and Windows. The container image runs on any Docker host, x86_64 or arm64. |
 | Python | 3.10 or newer. Every release is tested on 3.10 and 3.14. |
 | Browser | Chromium. The install steps below fetch it. The container image already has it. |
 | Network | Outbound HTTPS (port 443) to `api.sekuscan.com`, and access to the applications you scan. No inbound connections. |
@@ -30,7 +30,7 @@ Linux and macOS:
 
 ```
 python3 -m venv ~/sekuscan-agent
-~/sekuscan-agent/bin/pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.3/sekuscan_agent-0.2.3-py3-none-any.whl
+~/sekuscan-agent/bin/pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.4/sekuscan_agent-0.2.4-py3-none-any.whl
 ~/sekuscan-agent/bin/playwright install --with-deps chromium
 ```
 
@@ -38,7 +38,7 @@ Windows (PowerShell):
 
 ```
 py -m venv sekuscan-agent
-sekuscan-agent\Scripts\pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.3/sekuscan_agent-0.2.3-py3-none-any.whl
+sekuscan-agent\Scripts\pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.4/sekuscan_agent-0.2.4-py3-none-any.whl
 sekuscan-agent\Scripts\playwright install chromium
 ```
 
@@ -46,12 +46,13 @@ That is all. Continue with [Quick start](#quick-start).
 
 ### Docker
 
-The image includes everything. This one command runs a scan and writes the
-report to the current directory:
+The image includes everything and runs on x86_64 and arm64. These commands
+run a scan and write the report to `./report`:
 
 ```
-docker run --rm --user "$(id -u):$(id -g)" -e SEKUSCAN_API_KEY -v "$PWD:/report" \
-  ghcr.io/sekuripy/sekuscan-agent:v0.2.3 run --engine https://api.sekuscan.com \
+mkdir -p report
+docker run --rm --user "$(id -u):$(id -g)" -e SEKUSCAN_API_KEY -v "$PWD/report:/report" \
+  ghcr.io/sekuripy/sekuscan-agent:v0.2.4 run --engine https://api.sekuscan.com \
   --target https://app.example.com/ --verify-target-tls --out /report
 ```
 
@@ -73,9 +74,9 @@ Optional, for security reviews. Each
 Download them next to the wheel and run:
 
 ```
-sha256sum -c SHA256SUMS
-gh attestation verify sekuscan_agent-0.2.3-py3-none-any.whl -R sekuripy/sekuscan-agent
-pip install -c requirements.lock sekuscan_agent-0.2.3-py3-none-any.whl
+sha256sum -c --ignore-missing SHA256SUMS
+gh attestation verify sekuscan_agent-0.2.4-py3-none-any.whl -R sekuripy/sekuscan-agent
+pip install -c requirements.lock sekuscan_agent-0.2.4-py3-none-any.whl
 ```
 
 `gh` is the [GitHub CLI](https://cli.github.com/).
@@ -88,14 +89,27 @@ pip install git+https://github.com/sekuripy/sekuscan-agent
 
 ## Quick start
 
+Linux and macOS:
+
 ```
 export SEKUSCAN_API_KEY=...
 ~/sekuscan-agent/bin/sekuscan-agent run --engine https://api.sekuscan.com \
   --target https://app.example.com/ --verify-target-tls --out ./report
 ```
 
+Windows (PowerShell):
+
+```
+$env:SEKUSCAN_API_KEY = "..."
+sekuscan-agent\Scripts\sekuscan-agent run --engine https://api.sekuscan.com `
+  --target https://app.example.com/ --verify-target-tls --out .\report
+```
+
 The report is written to `./report`. To scan an application on the same
 machine (127.0.0.1), add `--allow-internal-targets`.
+
+For authenticated scans, use a dedicated test account with only the rights
+the scan needs. Do not use an administrator's own account.
 
 `sekuscan-agent run --help` lists every option. `sekuscan-agent --version`
 prints the version.
@@ -114,7 +128,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: |
-          pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.3/sekuscan_agent-0.2.3-py3-none-any.whl
+          pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.4/sekuscan_agent-0.2.4-py3-none-any.whl
           playwright install --with-deps chromium
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: ./start-the-app-under-test.sh &
@@ -150,8 +164,10 @@ Code: [`sekuscan/agent/scope.py`](sekuscan/agent/scope.py),
   workers. The agent fetches each in-scope request first and checks every
   redirect before the browser follows it. It refuses redirect chains longer
   than 10 hops, hops it cannot fetch, and a 307/308 redirect of a form POST to
-  another host. In this mode each in-scope page load is requested twice. The
-  agent will not start in this mode with Playwright older than 1.48.
+  another host. In this mode each in-scope page load is requested twice.
+  The check sees the first response. A target that answers the browser's
+  request differently can still redirect it, so this is a best-effort guard.
+  The agent will not start in this mode with Playwright older than 1.48.
 - Scope settings and `--strict-egress` filter requests inside the browser.
   They do not replace a firewall. If you need hard network limits, add
   firewall rules on the machine running the agent.
@@ -227,6 +243,7 @@ declared read-only.
   themselves are not limited.
 - `--max-actions` limits the number of actions in a run.
 - `--max-seconds N` limits the run time, counted from when the agent starts.
+  Setup and the first request to the engine count too.
   At N seconds the engine is asked to finish. By N+30 seconds the agent stops
   after the current step. By N+120 seconds the agent exits with code 5, even
   if a step is stuck. Downloading the final report afterwards can take longer.

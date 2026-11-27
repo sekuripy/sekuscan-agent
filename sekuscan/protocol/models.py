@@ -17,7 +17,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 PROTOCOL_VERSION = "0.1"
-AGENT_VERSION = "0.2.3"
+AGENT_VERSION = "0.2.4"
 ENGINE_VERSION = "0.1.0"
 
 DirectiveKind = Literal[

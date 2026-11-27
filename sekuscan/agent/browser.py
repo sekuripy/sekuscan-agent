@@ -1343,7 +1343,9 @@ class BrowserSession:
                 return target
             hops += 1
             if hops >= self.MAX_NAV_REDIRECTS:
-                return None  # the browser caps it; every hop so far was fine
+                # Refuse: Chromium would follow the rest unseen, replaying
+                # the operator's headers on every hop.
+                return target
             try:
                 response = self.context.request.get(
                     target, headers=self._credential_headers_for(target),

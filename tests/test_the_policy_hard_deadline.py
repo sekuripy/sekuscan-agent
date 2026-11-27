@@ -61,6 +61,27 @@ def test_a_blocked_engine_step_ends_by_n_plus_margin_with_the_documented_code():
         assert "hard deadline" in json.load(fh)["stop_reason"]
 
 
+def test_a_blocked_run_creation_ends_by_n_plus_margin_too():
+    out = tempfile.mkdtemp()
+    script = SCRIPT.replace("def create_run(self, _r):", "def create_run(self, _r):\n        time.sleep(3600)")
+    env = dict(os.environ, SEKUSCAN_BROWSER_ISOLATION="0",
+               SEKUSCAN_MAX_SECONDS_HARD_MARGIN_S="2")
+    t0 = time.monotonic()
+    proc = subprocess.run([sys.executable, "-c", script, out], env=env,
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == ci.EXIT_WALL_CLOCK, proc.stderr[-800:]
+    assert time.monotonic() - t0 < 25
+
+
+def test_the_env_var_cannot_widen_the_documented_margin():
+    from unittest.mock import patch
+    from sekuscan.agent import cli
+    with patch.dict(os.environ, SEKUSCAN_MAX_SECONDS_HARD_MARGIN_S="99999"):
+        assert cli._hard_margin_s() == MAX_SECONDS_HARD_MARGIN_S
+    with patch.dict(os.environ, SEKUSCAN_MAX_SECONDS_HARD_MARGIN_S="2"):
+        assert cli._hard_margin_s() == 2
+
+
 def test_the_help_states_soft_and_hard():
     assert "N+%d" % MAX_SECONDS_HARD_MARGIN_S in MAX_SECONDS_HELP
     assert "code %d" % ci.EXIT_WALL_CLOCK in MAX_SECONDS_HELP

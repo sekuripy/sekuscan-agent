@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.4
+
+Changes from a third external review.
+
+- A redirect chain longer than 10 hops is refused. Before, the agent let
+  the browser follow the rest of it unchecked.
+- The `--max-seconds` hard limit now also covers setup and the first request
+  to the engine.
+- The container image is published for both x86_64 and arm64. Its base image
+  is pinned by digest.
+- README: the Docker example writes to `./report` only, a PowerShell quick
+  start, how to verify only the files you downloaded, and advice to scan with
+  a dedicated test account.
+
 ## 0.2.3
 
 - Windows: credential commands (`cmd:`) now work with Windows paths.
