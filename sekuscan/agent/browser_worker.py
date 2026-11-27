@@ -165,9 +165,7 @@ def _browser_executor(init: dict[str, Any]) -> tuple[dict[str, Callable], dict]:
         from .cli import _run_probe_batch
 
         if not _async_worker_box:
-            worker = AsyncProbeWorker(
-                ignore_https_errors=session.ignore_https_errors,
-                proxy=session._proxy_dict(), user_agent=session.user_agent)
+            worker = AsyncProbeWorker(**session.async_worker_kwargs())
             worker.start()
             _async_worker_box.append(worker)
         worker = _async_worker_box[0]

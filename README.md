@@ -12,27 +12,35 @@ All connections are outbound from the agent; nothing connects in.
 [Security model](https://sekuscan.com/security/) ·
 [sekuscan.com](https://sekuscan.com)
 
+## Requirements
+
+| | |
+|---|---|
+| OS | Linux x86_64. CI runs on `ubuntu-24.04` x86_64; other platforms, arm64 included, are not tested. |
+| Python | 3.10 to 3.12 tested; 3.10 or newer declared. |
+| Browser | Chromium: `playwright install --with-deps chromium`, or use the container image, which includes it. |
+| Network | Outbound HTTPS (443) to `api.sekuscan.com`, and reachability to the targets. Nothing inbound. |
+| Resources | Guidance, not a guarantee: about 1-2 GB RAM and 2 CPUs; a few hundred MB of disk for reports. (An idle headless Chromium with one blank page measured about 0.6 GB resident; real applications use more.) |
+| Privileges | A dedicated non-root user. Never run the agent as root. |
+| Licence | A SekuScan API key. The hosts you scan must be verified for it; loopback targets need no verification. |
+
 ## Install
 
-Pinned release (recommended). Download the wheel and `SHA256SUMS` from the
-[release page](https://github.com/sekuripy/sekuscan-agent/releases), then
-verify and install:
+Pinned release (recommended). From the
+[release page](https://github.com/sekuripy/sekuscan-agent/releases) download
+the wheel, `requirements.lock`, `SHA256SUMS` and the SBOM
+(`sbom.cdx.json`, CycloneDX), then verify and install:
 
 ```
-sha256sum -c --ignore-missing SHA256SUMS
-gh attestation verify sekuscan_agent-0.2.1-py3-none-any.whl --repo sekuripy/sekuscan-agent
-pip install sekuscan_agent-0.2.1-py3-none-any.whl -c requirements.lock
-playwright install chromium
+sha256sum -c SHA256SUMS
+gh attestation verify sekuscan_agent-0.2.2-py3-none-any.whl -R sekuripy/sekuscan-agent
+gh attestation verify requirements.lock -R sekuripy/sekuscan-agent
+pip install -c requirements.lock sekuscan_agent-0.2.2-py3-none-any.whl
+playwright install --with-deps chromium
 ```
 
-Or directly, without the verification steps:
-
-```
-pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.1/sekuscan_agent-0.2.1-py3-none-any.whl
-```
-
-`requirements.lock` (attached to each release) pins the exact versions of the
-dependencies the release was built and tested with, Playwright included.
+`requirements.lock` pins the exact versions of the dependencies the release
+was built and tested with, Playwright included; the SBOM lists the same set.
 
 Developer option, the current default branch:
 
@@ -41,22 +49,29 @@ pip install git+https://github.com/sekuripy/sekuscan-agent
 playwright install chromium
 ```
 
-Container image, with Chromium included (`ghcr.io/sekuripy/sekuscan-agent`):
+Container image, with Chromium included (`ghcr.io/sekuripy/sekuscan-agent`).
+Download [`seccomp_profile.json`](seccomp_profile.json) from this repository
+(Playwright's own Docker profile, which lets Chromium's sandbox start), then:
 
 ```
+mkdir report && chown 1001 report     # pwuser's uid in the image; or see below
 docker run --rm --ipc=host -e SEKUSCAN_API_KEY \
-  ghcr.io/sekuripy/sekuscan-agent:v0.2.1 run --engine https://api.sekuscan.com \
-  --target https://app.example.com/ --out /tmp/report
+  --security-opt seccomp=seccomp_profile.json \
+  -v "$PWD/report:/report" \
+  ghcr.io/sekuripy/sekuscan-agent:v0.2.2 run --engine https://api.sekuscan.com \
+  --target https://app.example.com/ --verify-target-tls \
+  --browser-sandbox on --out /report
 ```
 
-The image runs as the non-root user `pwuser`. Chromium's sandbox needs user
-namespaces, which Docker's default seccomp profile blocks. Playwright's
-[Docker guidance](https://playwright.dev/docs/docker) is to run as `pwuser`
-with its seccomp profile (`--security-opt seccomp=seccomp_profile.json`,
-[the profile](https://github.com/microsoft/playwright/blob/main/utils/docker/seccomp_profile.json)),
-and `--ipc=host` so Chromium does not run out of shared memory. Without such a
-profile, pass `--browser-sandbox off` and treat the container itself as the
-isolation boundary.
+The image runs as the non-root user `pwuser` (uid 1001), so the host
+directory mounted at `/report` must be writable by that uid: `chown 1001` it
+as above, or add `--user "$(id -u):$(id -g)"` to run as your own user, which
+also works with the image and the seccomp profile. `--ipc=host` keeps Chromium
+from running out of shared memory. Docker's default seccomp profile blocks the
+user namespaces Chromium's sandbox needs; with the profile above and
+`--browser-sandbox on` the sandbox is verified to start. Only if you cannot
+use the profile, pass `--browser-sandbox off` and treat the container itself
+as the isolation boundary.
 
 ## Quick start
 
@@ -67,7 +82,7 @@ CI job) needs no verification; pass `--allow-internal-targets` for it.
 ```
 export SEKUSCAN_API_KEY=...
 sekuscan-agent run --engine https://api.sekuscan.com \
-  --target https://app.example.com/ --out ./report
+  --target https://app.example.com/ --verify-target-tls --out ./report
 ```
 
 `sekuscan-agent run --help` lists every option: scope and deny rules,
@@ -86,12 +101,14 @@ jobs:
   scan:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: |
-          pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.1/sekuscan_agent-0.2.1-py3-none-any.whl
+          base=https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.2
+          curl -fsSLO $base/requirements.lock -O $base/sekuscan_agent-0.2.2-py3-none-any.whl
+          pip install -c requirements.lock sekuscan_agent-0.2.2-py3-none-any.whl
           playwright install --with-deps chromium
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: ./start-the-app-under-test.sh &
@@ -104,6 +121,11 @@ jobs:
 ```
 
 A loopback target needs `--allow-internal-targets` and no host verification.
+
+The `sysctl` step above is for disposable hosted runners only. Do not apply it
+to a persistent host: there, use a dedicated user with an AppArmor profile
+that permits user namespaces for Chromium, or the container with the seccomp
+profile.
 
 ## Scope
 
@@ -122,10 +144,19 @@ A loopback target needs `--allow-internal-targets` and no host verification.
 - What a page loads by itself is the page's business: off-scope images,
   scripts and fetches are allowed so the application renders, without your
   credentials. A page navigating off-scope is stopped. The page's own
-  WebSocket connections and service workers are not intercepted.
-- `--scope` is a scanning policy, not network containment. Where containment
-  matters, add `--strict-egress` (the browser can reach only the hosts the
-  scope allows) and firewall rules on the machine running the agent.
+  WebSocket connections and service workers are not intercepted (unless
+  `--strict-egress` is set).
+- `--scope` is a scanning policy, not network containment. `--strict-egress`
+  adds browser-level request filtering: the browser's requests to hosts the
+  scope does not allow are blocked, service workers are disabled, and the
+  agent refuses to start in this mode if the browser cannot intercept
+  WebSockets (Playwright 1.48 or newer). An in-scope request is fetched by
+  the agent itself so its redirect chain is checked hop by hop before the
+  browser follows it; a chain it cannot verify (over 10 hops, or a hop it
+  cannot fetch) and a 307/308 redirect of a form POST to an off-scope host
+  are refused. Each in-scope GET navigation is requested twice. It is
+  filtering inside the browser, not network containment: where containment
+  matters, also use firewall rules on the machine running the agent.
 
 ## Credentials and what leaves your network
 
@@ -172,7 +203,8 @@ the vulnerability being tested.
 
 The browser runs in a child process the agent can kill and restart.
 `--browser-sandbox {auto,on,off}` controls Chromium's own sandbox; the default
-`auto` enables it where the host supports it.
+`auto` enables it where the host supports it. `on` requires it and refuses
+to run with a browser other than Chromium, where the sandbox is not requested.
 
 ## Risk levels the agent enforces itself
 
@@ -194,7 +226,11 @@ No level promises zero side effects against the target.
   are answered "no" unless `--allow-destructive` is set.
 - `--max-rps` paces navigations and the agent's direct HTTP and WebSocket
   requests; form submissions, clicks and what a page loads on its own are
-  not paced. `--max-actions` and `--max-seconds` bound the run.
+  not paced. `--max-actions` and `--max-seconds` bound the run. The
+  `--max-seconds N` clock starts when the agent starts: at N the engine is
+  asked to finish, by N+30 s the agent ends the run at the next step, and by
+  N+120 s the process exits with code 5 even if a step is blocked. Fetching
+  the final report afterwards is bounded by the engine timeouts, not by N.
 
 The agent connects outbound to the engine over HTTPS (verified against the
 system and public trust stores). `--ca-cert` makes the agent's own requests
@@ -228,7 +264,11 @@ Tuning knobs, none needed in normal use:
 The agent sends its version and protocol version when a run starts. The
 engine refuses an incompatible agent at run start with a message telling you
 to upgrade, never in the middle of a scan. The current and the previous minor
-release are supported. To upgrade, install the newer release; see the
+release are supported.
+
+Support policy: security fixes are released as patch versions on the current
+minor; the previous minor receives security fixes for 90 days after a new
+minor ships. To upgrade, install the newer release; see the
 [changelog](CHANGELOG.md).
 
 ## Licence

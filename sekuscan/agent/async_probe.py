@@ -72,8 +72,12 @@ class AsyncProbeWorker:
 
     def __init__(self, ignore_https_errors: bool = True,
                  proxy: Optional[dict] = None,
-                 user_agent: Optional[str] = None):
+                 user_agent: Optional[str] = None,
+                 client_certificates: Optional[list] = None):
         self._ignore_https_errors = ignore_https_errors
+        # mTLS: the operator's client certificate, as for the sequential
+        # transport (`BrowserSession._network_context_kwargs`).
+        self._client_certificates = client_certificates
         # The batch worker builds its OWN `playwright.request.new_context()`,
         # which inherits nothing from the browser context - so, exactly like
         # the anonymous/secondary request contexts in `browser.py`, it must be
@@ -188,6 +192,8 @@ class AsyncProbeWorker:
             new_context_kwargs["proxy"] = self._proxy
         if self._user_agent:
             new_context_kwargs["user_agent"] = self._user_agent
+        if self._client_certificates:
+            new_context_kwargs["client_certificates"] = self._client_certificates
         contexts: list[Any] = []
 
         async def fresh(seeded: bool) -> Any:

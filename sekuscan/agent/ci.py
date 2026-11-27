@@ -47,6 +47,8 @@ EXIT_OK = 0
 EXIT_FINDINGS = 1
 EXIT_USAGE = 2
 EXIT_ERROR = 3
+# 4 is --fail-on-incomplete (cli.py). 5: --max-seconds hard wall-clock exit.
+EXIT_WALL_CLOCK = 5
 
 
 @dataclass

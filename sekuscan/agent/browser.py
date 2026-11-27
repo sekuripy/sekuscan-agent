@@ -225,7 +225,9 @@ SANDBOX_HELP = (
     "The Chromium sandbox could not start on this host. On Ubuntu 23.10+/24.04 "
     "run `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (or "
     "run the agent as a dedicated user that unprivileged user namespaces are "
-    "allowed for); to run without the sandbox, pass `--browser-sandbox off`.")
+    "allowed for). In Docker, run with `--security-opt "
+    "seccomp=seccomp_profile.json` (shipped with the agent). To run without "
+    "the sandbox, pass `--browser-sandbox off`.")
 
 
 def launch_browser(launcher: Any, browser_name: str, mode: str,
@@ -233,6 +235,11 @@ def launch_browser(launcher: Any, browser_name: str, mode: str,
     """Launch with the Chromium sandbox per `--browser-sandbox`; returns
     `(browser, sandboxed)`. Playwright's own default is NO sandbox, so it is
     asked for explicitly. `auto` falls back loudly, `on` refuses to."""
+    if mode == "on" and browser_name != "chromium":
+        raise RuntimeError(
+            "--browser-sandbox on needs --browser chromium: the sandbox is "
+            "only requested for Chromium, so %s would run unsandboxed"
+            % browser_name)
     if mode == "off" or browser_name != "chromium":
         return launcher.launch(**launch_kwargs), False
     try:
@@ -527,6 +534,20 @@ class BrowserSession:
         if self.strict_egress:
             kwargs["service_workers"] = "block"
         return kwargs
+
+    def async_worker_kwargs(self) -> dict[str, Any]:
+        """The ONE place the concurrent-probe transport's policy is derived
+        from this session (TLS verification, proxy/relay, mTLS client cert,
+        User-Agent): both `cli.py` and `browser_worker.py` construct
+        `AsyncProbeWorker(**session.async_worker_kwargs())`, so the batch
+        transport cannot drift from the sequential one."""
+        return {
+            "ignore_https_errors": self.api_ignore_https_errors,
+            "proxy": self._proxy_dict(),
+            "user_agent": self.user_agent,
+            "client_certificates":
+                self._network_context_kwargs().get("client_certificates"),
+        }
 
     @property
     def api_ignore_https_errors(self) -> bool:
@@ -1333,7 +1354,8 @@ class BrowserSession:
                 # continuing off-scope.
                 log.debug("could not verify redirect hop %s: %s",
                           target[:120], exc)
-                return None
+                # --strict-egress fails closed on an unverifiable hop.
+                return target if self.strict_egress else None
             current = target
         return None
 
@@ -1379,12 +1401,14 @@ class BrowserSession:
                                        deny_substrings=self.deny_substrings,
                                        allow_subdomains=self.allow_subdomains,
                                        max_depth=self.max_depth).allowed
-                        and self.credentials_allowed(target)):
-                    if navigation:
+                        and (self.credentials_allowed(target)
+                             or (self.strict_egress
+                                 and not self.extra_headers))):
+                    if navigation or self.strict_egress:
                         # A 307/308 would make the browser re-send this
                         # form's body to that host unseen: stop here.
                         self._record_egress({
-                            "url": target[:400], "type": "document",
+                            "url": target[:400], "type": request.resource_type,
                             "method": method, "blocked": True,
                             "via_redirect_from": url[:400],
                             "safety_incident": False}, count_safety_incident=False)
@@ -1396,6 +1420,12 @@ class BrowserSession:
                     hdrs = {k: v for k, v in hdrs.items()
                             if k.lower() not in ("content-type", "content-length")}
                 url = target
+            else:
+                if self.strict_egress:
+                    # chain longer than we can verify: the browser would
+                    # follow the rest unseen
+                    route.abort()
+                    return
         except Exception as exc:
             log.debug("credentialed request failed: %s", exc)
             route.abort()
@@ -1425,9 +1455,12 @@ class BrowserSession:
 
         route_ws = getattr(self.context, "route_web_socket", None)
         if route_ws is None:
-            log.warning("--strict-egress: this Playwright cannot intercept "
-                        "page WebSockets; they are NOT contained")
-            return
+            # Fail closed: the operator asked for a control; running without
+            # it would contradict that.
+            raise RuntimeError(
+                "--strict-egress needs Playwright >= 1.48 "
+                "(context.route_web_socket) to contain page WebSockets; "
+                "upgrade Playwright or drop --strict-egress")
         route_ws("**/*", ws_handler)
 
     def _install_egress_guard(self) -> None:
@@ -1479,16 +1512,23 @@ class BrowserSession:
                 # `execute._contain_offscope_navigation`.
                 get_navigation = (self._is_document_navigation(request)
                                   and (request.method or "GET").upper() == "GET")
-                if credential_ok and headers and not get_navigation:
+                # --strict-egress: EVERY in-scope request's redirect chain is
+                # walked before the browser may follow it (Chromium never asks
+                # the handler about a redirect hop), credential or not.
+                strict = self.strict_egress
+                if (credential_ok and headers or strict) and not get_navigation:
                     self._fulfill_contained(route, request, sent)
                     return
-                if credential_ok and get_navigation:
+                if (credential_ok or strict) and get_navigation:
                     self.preflight_requests += 1
                     try:
                         first = route.fetch(headers=sent, max_redirects=0)
                     except Exception as exc:
                         log.debug("navigation pre-flight failed: %s", exc)
                         first = None
+                        if strict:
+                            route.abort()
+                            return
                     offscope = (self._offscope_hop(first, url)
                                 if first is not None else None)
                     if offscope:

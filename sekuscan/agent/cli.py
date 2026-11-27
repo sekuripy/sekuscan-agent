@@ -313,7 +313,13 @@ class _ProgressWatchdog:
     _clock = staticmethod(time.monotonic)
 
     def __init__(self, seconds: float = NO_PROGRESS_DEADLINE_S,
-                 on_stall: Optional[Any] = None):
+                 on_stall: Optional[Any] = None,
+                 hard_deadline: Optional[float] = None,
+                 on_hard: Optional[Any] = None):
+        # `hard_deadline` is an absolute `_clock()` time (the `--max-seconds`
+        # backstop): same thread, same os._exit, a different exit code.
+        self.hard_deadline = hard_deadline
+        self._on_hard = on_hard
         self.seconds = float(seconds)
         self._last = self._clock()
         self._stop = threading.Event()
@@ -324,7 +330,7 @@ class _ProgressWatchdog:
         self._last = self._clock()
 
     def start(self) -> "_ProgressWatchdog":
-        if self.seconds <= 0:
+        if self.seconds <= 0 and self.hard_deadline is None:
             return self
         self._thread = threading.Thread(target=self._watch, daemon=True,
                                         name="sekuscan-progress-watchdog")
@@ -337,8 +343,34 @@ class _ProgressWatchdog:
     def stalled_for(self) -> float:
         return self._clock() - self._last
 
+    def _tick(self) -> float:
+        tick = 5.0
+        if self.seconds > 0:
+            tick = min(tick, self.seconds / 4.0)
+        if self.hard_deadline is not None:
+            tick = min(tick, max(0.05, (self.hard_deadline - self._clock()) / 4.0))
+        return max(0.05, tick)
+
+    def _hard_exit(self) -> None:
+        message = ("--max-seconds hard deadline reached - the run did not "
+                   "wind down in time; abandoning it")
+        log.error(message)
+        try:
+            if self._on_hard is not None:
+                self._on_hard(message)
+        except Exception:
+            pass
+        sys.stderr.write("\n!! %s\n" % message)
+        sys.stderr.flush()
+        os._exit(ci.EXIT_WALL_CLOCK)
+
     def _watch(self) -> None:
-        while not self._stop.wait(min(5.0, self.seconds / 4.0)):
+        while not self._stop.wait(self._tick()):
+            if (self.hard_deadline is not None
+                    and self._clock() >= self.hard_deadline):
+                self._hard_exit()
+            if self.seconds <= 0:
+                continue
             sample = self.stalled_for()
             try:
                 stalled = float(sample)
@@ -535,6 +567,22 @@ def with_ports(target: str, scope: list[str], ports: list[int]) -> list[str]:
 #: How long past `--max-seconds` the agent waits for the engine to stop first.
 MAX_SECONDS_GRACE_S = 30
 
+#: Hard wall-clock backstop: the process exits (code `ci.EXIT_WALL_CLOCK`) at
+#: `--max-seconds` + this, whatever the main thread is doing. Derived: the
+#: engine gets its grace (30s) and a step already in flight may legitimately
+#: run to the action deadline (90s) - this is their sum, so a healthy wind-down
+#: is never cut short. It is far below the 600s engine read timeout, which is
+#: exactly the case the backstop exists for (a blocked engine request).
+MAX_SECONDS_HARD_MARGIN_S = MAX_SECONDS_GRACE_S + ACTION_DEADLINE_S
+
+MAX_SECONDS_HELP = (
+    "wall-clock limit for the run, counted from agent start. Soft at N: the "
+    "engine is asked to stop and the report says why; the agent ends the run "
+    "itself at the next step boundary after N+%ds. Hard: the agent process "
+    "exits with code %d by N+%ds even if a step is blocked (partial trace "
+    "written, browser killed)"
+    % (MAX_SECONDS_GRACE_S, ci.EXIT_WALL_CLOCK, MAX_SECONDS_HARD_MARGIN_S))
+
 
 def clamp_capture(capture: Any, ceiling: int) -> Any:
     """The operator's `--max-capture-bytes`: the engine may lower every
@@ -612,6 +660,7 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
     if max_capture_bytes is not None and max_capture_bytes < 1:
         print("error: --max-capture-bytes must be at least 1", file=sys.stderr)
         return 2
+    run_started = time.monotonic()      # --max-seconds counts from here
     os.makedirs(out, exist_ok=True)
     # The report/trace directory holds sensitive material (session values,
     # evidence), so it is chmod-ed explicitly: `mode=` on makedirs is umask-
@@ -948,6 +997,53 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
         # `session.safety_incidents`.
         return _iso_incidents if isolated else session.safety_incidents
 
+    # Last-resort deadlines, started BEFORE the browser/session init so a hang
+    # there is covered too. A malformed `SEKUSCAN_NO_PROGRESS_S` must not stop
+    # the agent starting, and must not be silent: the default is announced.
+    raw_no_progress = os.environ.get("SEKUSCAN_NO_PROGRESS_S")
+    no_progress_s = NO_PROGRESS_DEADLINE_S
+    if raw_no_progress:
+        try:
+            no_progress_s = float(raw_no_progress)
+        except (TypeError, ValueError):
+            log.warning("SEKUSCAN_NO_PROGRESS_S=%r is not a number - "
+                        "using the default %s", raw_no_progress,
+                        NO_PROGRESS_DEADLINE_S)
+
+    def _hard_stop(message: str) -> None:
+        # Runs on the watchdog thread; the main thread is wedged. Best effort,
+        # each part guarded: kill the browser (isolated child), then leave the
+        # trace and the reason on disk. The in-process browser dies with this
+        # process (its driver's pipe closes).
+        try:
+            if handle is not None:
+                handle._kill()
+        except Exception:
+            pass
+        try:
+            path = os.path.join(out, "agent-trace.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"target": target, "profile": profile,
+                           "stop_reason": message, "steps": steps,
+                           "trace": list(trace), "browser_sandbox": None,
+                           "egress": []}, fh, indent=2, default=str)
+            _restrict(path, 0o600)
+        except Exception:
+            pass
+
+    try:
+        hard_s = float(os.environ.get("SEKUSCAN_MAX_SECONDS_HARD_MARGIN_S",
+                                      MAX_SECONDS_HARD_MARGIN_S))
+    except ValueError:
+        hard_s = float(MAX_SECONDS_HARD_MARGIN_S)
+    watchdog = _ProgressWatchdog(
+        no_progress_s,
+        # in the watchdog's own clock, minus what init has already used
+        hard_deadline=(_ProgressWatchdog._clock() + max_seconds + hard_s
+                       - (time.monotonic() - run_started)
+                       if max_seconds else None),
+        on_hard=_hard_stop).start()
+
     try:
         if isolated:
             # The browser lives in a killable child; this process never calls
@@ -1024,26 +1120,13 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
         # action produced, so the guard is checked only after a directive is
         # received.
         limit = max_steps if max_steps and max_steps > 0 else run.safety_ceiling
-        # Last-resort deadline; see `_ProgressWatchdog`. Every completed step
-        # beats it, so a wedged step - which neither the SIGALRM action
-        # deadline nor an HTTP timeout can reach - ends the run in minutes. A
-        # malformed `SEKUSCAN_NO_PROGRESS_S` must not stop the agent starting,
-        # and must not be silent either: the operator is told the default is
-        # in effect.
-        raw_no_progress = os.environ.get("SEKUSCAN_NO_PROGRESS_S")
-        no_progress_s = NO_PROGRESS_DEADLINE_S
-        if raw_no_progress:
-            try:
-                no_progress_s = float(raw_no_progress)
-            except (TypeError, ValueError):
-                log.warning("SEKUSCAN_NO_PROGRESS_S=%r is not a number - "
-                            "using the default %s", raw_no_progress,
-                            NO_PROGRESS_DEADLINE_S)
-        watchdog = _ProgressWatchdog(no_progress_s).start()
+        # Last-resort deadlines live in the watchdog started before init; the
+        # init time is not "no progress" in the step loop.
+        watchdog.beat()
         # `--max-seconds` is also enforced HERE, not only by the engine that
         # was asked to stop: the grace lets an honest engine end the run
-        # itself first, with its own final report.
-        run_deadline = (time.monotonic() + max_seconds + MAX_SECONDS_GRACE_S
+        # itself first, with its own final report. Counted from agent start.
+        run_deadline = (run_started + max_seconds + MAX_SECONDS_GRACE_S
                         if max_seconds else None)
         while True:
             if run_deadline is not None and time.monotonic() >= run_deadline:
@@ -1169,9 +1252,7 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
                         # concurrent probes would bypass the relay (and,
                         # against an NTLM target, get 401).
                         async_worker = AsyncProbeWorker(
-                            ignore_https_errors=session.ignore_https_errors,
-                            proxy=session._proxy_dict(),
-                            user_agent=session.user_agent)
+                            **session.async_worker_kwargs())
                         async_worker.start()
                     obs = _run_probe_batch(
                         session, directives, guard, run.capture, policy,
@@ -1781,10 +1862,7 @@ def _argparse_main(argv: Optional[list[str]] = None) -> int:
                    help="engine HTTP timeout in seconds; omitted means a bounded default (10s connect, %ds read)" % int(READ_CEILING_S))
     r.add_argument("--max-actions", type=int, default=None, dest="max_steps")
     r.add_argument("--max-seconds", type=int, default=None, dest="max_seconds",
-                   help="wall-clock allowance for the run; it ends as an "
-                        "operator stop does and the report says why. Also "
-                        "enforced by the agent itself (30s after the limit "
-                        "if the engine has not stopped)")
+                   help=MAX_SECONDS_HELP)
     r.add_argument("--browser-sandbox", choices=("auto", "on", "off"),
                    default="auto", help=BROWSER_SANDBOX_HELP)
     r.add_argument("--verify-target-tls", action="store_true",
@@ -2078,10 +2156,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             help="engine HTTP timeout in seconds; omitted means a bounded default (10s connect, %ds read)" % int(READ_CEILING_S)),
         max_seconds: Optional[int] = typer.Option(
             None, "--max-seconds",
-            help="wall-clock allowance for the run; it ends as an operator "
-                 "stop does and the report says why. Also enforced by the "
-                 "agent itself (30s after the limit if the engine has not "
-                 "stopped)"),
+            help=MAX_SECONDS_HELP),
         max_steps: Optional[int] = typer.Option(
             None, "--max-actions",
             help="operator escape hatch; by default the run ends when there is "
