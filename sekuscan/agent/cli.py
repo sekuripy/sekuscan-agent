@@ -2055,7 +2055,14 @@ def _argparse_main(argv: Optional[list[str]] = None) -> int:
     s.add_argument("--engine-timeout", type=float, default=None,
                    help="engine HTTP timeout in seconds; omitted means a bounded default (10s connect, %ds read)" % int(READ_CEILING_S))
 
+    v = sub.add_parser("vulnerableapp-findings",
+                       help="print a report's findings in OWASP VulnerableApp's scanner input format")
+    v.add_argument("report", help="report.json written by `run`")
+
     args = parser.parse_args(argv)
+    if args.command == "vulnerableapp-findings":
+        from . import vulnerableapp
+        return vulnerableapp.main(args.report)
     api_key = args.api_key or os.environ.get(ci.ENV_API_KEY)
     if not api_key:
         print(f"error: --api-key is required (or set {ci.ENV_API_KEY})",
@@ -2446,6 +2453,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         code = stop_run_cli(engine=engine, api_key=resolved_api_key, run_id=run_id,
                             reason=reason, engine_timeout=engine_timeout)
         raise typer.Exit(code)
+
+    @app.command("vulnerableapp-findings")
+    def vulnerableapp_findings(
+        report: str = typer.Argument(..., help="report.json written by `run`"),
+    ) -> None:
+        """Print a report's findings in OWASP VulnerableApp's scanner input format."""
+        from . import vulnerableapp
+        raise typer.Exit(vulnerableapp.main(report))
 
     try:
         # with standalone_mode=False click *returns* the exit code from

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.7
+
+- `sekuscan-agent vulnerableapp-findings` prints a report's findings in the
+  format OWASP VulnerableApp's `/scanner/benchmark` endpoint grades.
+
 ## 0.2.6
 
 - The container image is also tagged `latest`, which always points to the
