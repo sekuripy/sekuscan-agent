@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sekuscan-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "The SekuScan agent: drives a real browser inside your network on behalf of the SekuScan engine"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,9 +21,20 @@ dependencies = [
     "certifi>=2023.7",
 ]
 
+keywords = ["security", "scanner", "playwright", "sekuscan"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
 [project.urls]
 Homepage = "https://sekuscan.com"
 Source = "https://github.com/sekuripy/sekuscan-agent"
+Changelog = "https://github.com/sekuripy/sekuscan-agent/blob/main/CHANGELOG.md"
 Security = "https://sekuscan.com/security/"
 
 [project.scripts]

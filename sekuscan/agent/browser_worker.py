@@ -107,6 +107,7 @@ def _browser_executor(init: dict[str, Any]) -> tuple[dict[str, Callable], dict]:
 
     handshake = {
         "login_failed": session.login_failed,
+        "browser_sandbox": getattr(session, "sandboxed", None),
         "pre_login_states": [s.model_dump() for s in (session.pre_login_states or [])],
         "proxy_dict": session._proxy_dict(),
     }
@@ -164,8 +165,9 @@ def _browser_executor(init: dict[str, Any]) -> tuple[dict[str, Callable], dict]:
         from .cli import _run_probe_batch
 
         if not _async_worker_box:
-            worker = AsyncProbeWorker(proxy=session._proxy_dict(),
-                                      user_agent=session.user_agent)
+            worker = AsyncProbeWorker(
+                ignore_https_errors=session.ignore_https_errors,
+                proxy=session._proxy_dict(), user_agent=session.user_agent)
             worker.start()
             _async_worker_box.append(worker)
         worker = _async_worker_box[0]

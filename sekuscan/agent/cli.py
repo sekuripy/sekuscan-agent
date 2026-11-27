@@ -40,6 +40,7 @@ except ImportError:  # pragma: no cover
 from ..protocol.models import (
     AGENT_VERSION,
     PIPE_HOLD,
+    PROTOCOL_VERSION,
     SECRET_MFA_CODE,
     SECRET_PASSWORD,
     ActionResult,
@@ -59,7 +60,7 @@ from . import relay as relaymod
 from .api import (READ_CEILING_S, EngineClient, EngineError, trust_context,
                    EngineUnreachable)
 from .async_probe import AsyncProbeWorker
-from .browser import DEFAULT_USER_AGENT, BrowserSession
+from .browser import DEFAULT_USER_AGENT, BrowserSession, launch_browser
 # `browser_worker` (isolated mode) never imports Playwright at its own module
 # scope either, so importing its names here is as safe as the `BrowserSession`
 # import above.
@@ -531,6 +532,18 @@ def with_ports(target: str, scope: list[str], ports: list[int]) -> list[str]:
     return base + ["%s:%d" % (h, p) for h in hosts if h for p in ports]
 
 
+#: How long past `--max-seconds` the agent waits for the engine to stop first.
+MAX_SECONDS_GRACE_S = 30
+
+
+def clamp_capture(capture: Any, ceiling: int) -> Any:
+    """The operator's `--max-capture-bytes`: the engine may lower every
+    `*_bytes` evidence size, never raise it."""
+    return capture.model_copy(update={
+        name: min(getattr(capture, name), ceiling)
+        for name in type(capture).model_fields if name.endswith("_bytes")})
+
+
 @_clean_terminal_output
 def run_agent(engine: str, api_key: str, target: str, scope: list[str],
               profile: str = "default", out: str = "./runs/latest",
@@ -547,6 +560,9 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
               capture_max_actions: Optional[int] = None,
               max_steps: Optional[int] = None, quiet: bool = False,
               max_seconds: Optional[int] = None,
+              browser_sandbox: str = "auto", verify_target_tls: bool = False,
+              strict_egress: bool = False,
+              max_capture_bytes: Optional[int] = None,
               max_safety_incidents: int = DEFAULT_MAX_SAFETY_INCIDENTS,
               max_rps: float = 0.0,
               ca_cert: Optional[str] = None,
@@ -590,6 +606,12 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
               webhook_format: str = "generic",
               pdf: bool = False,
               user_agent: Optional[str] = None) -> int:
+    if browser_sandbox not in ("auto", "on", "off"):
+        print("error: --browser-sandbox must be auto, on or off", file=sys.stderr)
+        return 2
+    if max_capture_bytes is not None and max_capture_bytes < 1:
+        print("error: --max-capture-bytes must be at least 1", file=sys.stderr)
+        return 2
     os.makedirs(out, exist_ok=True)
     # The report/trace directory holds sensitive material (session values,
     # evidence), so it is chmod-ed explicitly: `mode=` on makedirs is umask-
@@ -768,6 +790,8 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
     # compromised or buggy engine could echo back an origins list wider than
     # what was asked for (or silently drop a `--deny` entry), and every
     # directive after this point is authorized against whatever `guard` holds.
+    if max_capture_bytes:
+        run.capture = clamp_capture(run.capture, max_capture_bytes)
     scope_problem = _scope_not_widened(scope or [target], deny or [], run.scope, max_depth)
     if scope_problem:
         print(f"error: {scope_problem}; refusing rather than trusting it",
@@ -829,6 +853,8 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
         allow_destructive=allow_destructive,
         user_agent=(user_agent or DEFAULT_USER_AGENT),
         capture=run.capture, browser_name=browser,
+        browser_sandbox=browser_sandbox, strict_egress=strict_egress,
+        ignore_https_errors=not verify_target_tls,
         extra_headers=extra_headers,
         cookies=ci.parse_pairs(auth.cookies),
         cookie_url=target,
@@ -875,6 +901,7 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
             target_auth_password if target_auth else None),
     )
     session: Optional[BrowserSession] = None
+    browser_sandboxed: Optional[bool] = None
     trace: list[dict] = []
     # Started lazily on the first batch response (`len(resp.directives) > 1`):
     # a run that never receives a batch never creates this - no extra thread,
@@ -954,11 +981,13 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
             handle = BrowserWorkerHandle(init, cap_s=PER_DIRECTIVE_CAP_S)
             info = handle.start()
             login_failed = info.get("login_failed")
+            browser_sandboxed = info.get("browser_sandbox")
             pre_login_states = [StateSnapshot.model_validate(s)
                                for s in info.get("pre_login_states") or []]
         else:
             session = BrowserSession(**session_kwargs)
             session.start()
+            browser_sandboxed = getattr(session, "sandboxed", None)
             login_failed = getattr(session, "login_failed", None)
             pre_login_states = getattr(session, "pre_login_states", None) or []
         # `_observe_pre_login` (agent/browser.py) captured an anonymous
@@ -1011,7 +1040,21 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
                             "using the default %s", raw_no_progress,
                             NO_PROGRESS_DEADLINE_S)
         watchdog = _ProgressWatchdog(no_progress_s).start()
+        # `--max-seconds` is also enforced HERE, not only by the engine that
+        # was asked to stop: the grace lets an honest engine end the run
+        # itself first, with its own final report.
+        run_deadline = (time.monotonic() + max_seconds + MAX_SECONDS_GRACE_S
+                        if max_seconds else None)
         while True:
+            if run_deadline is not None and time.monotonic() >= run_deadline:
+                # worded like the engine's own, which its coverage
+                # classifier already reads as a spent budget
+                stop_reason = ("wall-time budget reached after %ds (enforced "
+                               "by the agent; coverage incomplete)"
+                               % max_seconds)
+                log.error("%s - ending the engagement", stop_reason)
+                _say(quiet, "stop: %s" % stop_reason)
+                break
             # The run-level safety breaker. Checked at the top of the loop,
             # the one point both branches below return through, so one check
             # covers both transports. It lives here rather than in
@@ -1126,6 +1169,7 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
                         # concurrent probes would bypass the relay (and,
                         # against an NTLM target, get 401).
                         async_worker = AsyncProbeWorker(
+                            ignore_https_errors=session.ignore_https_errors,
                             proxy=session._proxy_dict(),
                             user_agent=session.user_agent)
                         async_worker.start()
@@ -1322,7 +1366,8 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
     _restrict(paths["report.html"], 0o600)
     if pdf:
         paths["report.pdf"] = os.path.join(out, "report.pdf")
-        pdf_error = render_report_pdf(paths["report.html"], paths["report.pdf"])
+        pdf_error = render_report_pdf(paths["report.html"], paths["report.pdf"],
+                                      browser_sandbox)
         if pdf_error is not None:
             print(f"pdf       : export failed - {pdf_error}", file=sys.stderr)
             del paths["report.pdf"]
@@ -1337,7 +1382,7 @@ def run_agent(engine: str, api_key: str, target: str, scope: list[str],
     with open(paths["agent-trace.json"], "w", encoding="utf-8") as fh:
         json.dump({"run_id": done.run_id, "target": target, "profile": profile,
                    "stop_reason": stop_reason, "steps": steps, "trace": trace,
-                   "egress": egress},
+                   "browser_sandbox": browser_sandboxed, "egress": egress},
                   fh, indent=2, default=str)
     _restrict(paths["agent-trace.json"], 0o600)
 
@@ -1484,7 +1529,8 @@ REPORT_PDF_FOOTER = (
 )
 
 
-def render_report_pdf(html_path: str, pdf_path: str) -> Optional[str]:
+def render_report_pdf(html_path: str, pdf_path: str,
+                      browser_sandbox: str = "auto") -> Optional[str]:
     """A dedicated PDF export, so an operator need not print-to-PDF from their
     own browser by hand. Returns an error string on failure, None on success -
     never raises, so a scan that finished correctly is not failed by a missing
@@ -1496,7 +1542,7 @@ def render_report_pdf(html_path: str, pdf_path: str) -> Optional[str]:
         return "playwright is not installed"
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser, _ = launch_browser(p.chromium, "chromium", browser_sandbox)
             try:
                 # The report comes from the engine: render it with scripts
                 # off and nothing fetched except the file itself.
@@ -1663,11 +1709,40 @@ def _run_probe_batch(session: BrowserSession, directives: list[Any],
     )
 
 
+RISK_HELP = ("operator risk level: 1 conservative - browses and submits the "
+             "forms it finds as a user would and sends engine-declared "
+             "read-only test inputs; no uploads, no DELETE, no undeclared "
+             "writes, no form method overrides; 2 observed workflows; "
+             "3 bounded upload and command proof")
+BROWSER_SANDBOX_HELP = (
+    "Chromium sandbox: auto (default) uses it and, if the host cannot start "
+    "it, warns loudly and runs without; on refuses to run without it; off "
+    "never uses it")
+VERIFY_TLS_HELP = (
+    "verify the TARGET's TLS certificate in the browser and in the agent's "
+    "own requests (default: certificate errors are ignored, test systems "
+    "often lack valid ones). Chromium does not read --ca-cert: a private CA "
+    "must be in the system trust store for the browser to accept it")
+STRICT_EGRESS_HELP = (
+    "abort every off-scope request the page makes and block service workers "
+    "(default: off-scope subresources load, without credentials). Page "
+    "WebSockets are closed when off-scope if Playwright supports it; a "
+    "firewall is the real containment")
+MAX_CAPTURE_HELP = (
+    "ceiling in bytes on every evidence sample size (HTML, text, body) the "
+    "engine asks the agent to capture; the engine may lower it, never raise it")
+
+
+VERSION_LINE = "sekuscan-agent %s (protocol %s)" % (AGENT_VERSION,
+                                                     PROTOCOL_VERSION)
+
+
 def _argparse_main(argv: Optional[list[str]] = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(prog="sekuscan-agent",
                                      description="SekuScan thin agent")
+    parser.add_argument("--version", action="version", version=VERSION_LINE)
     sub = parser.add_subparsers(dest="command", required=True)
     r = sub.add_parser("run", help="explore a target under engine control")
     # `--engine` is the name used throughout (the agent talks to the engine);
@@ -1685,7 +1760,7 @@ def _argparse_main(argv: Optional[list[str]] = None) -> int:
                                     "(comma-separated; explicit authorization)")
     r.add_argument("--profile", default="default", help=argparse.SUPPRESS)
     r.add_argument("--risk", type=int, choices=(1, 2, 3), default=1,
-                   help="operator risk level: 1 read-only, 2 observed workflows, 3 bounded upload and command proof")
+                   help=RISK_HELP)
     r.add_argument("--max-depth", type=int, default=None,
                    help="optional relative URL path-depth limit; omitted means unlimited")
     r.add_argument("--out", default="./runs/latest")
@@ -1707,7 +1782,16 @@ def _argparse_main(argv: Optional[list[str]] = None) -> int:
     r.add_argument("--max-actions", type=int, default=None, dest="max_steps")
     r.add_argument("--max-seconds", type=int, default=None, dest="max_seconds",
                    help="wall-clock allowance for the run; it ends as an "
-                        "operator stop does and the report says why")
+                        "operator stop does and the report says why. Also "
+                        "enforced by the agent itself (30s after the limit "
+                        "if the engine has not stopped)")
+    r.add_argument("--browser-sandbox", choices=("auto", "on", "off"),
+                   default="auto", help=BROWSER_SANDBOX_HELP)
+    r.add_argument("--verify-target-tls", action="store_true",
+                   help=VERIFY_TLS_HELP)
+    r.add_argument("--strict-egress", action="store_true", help=STRICT_EGRESS_HELP)
+    r.add_argument("--max-capture-bytes", type=int, default=None,
+                   help=MAX_CAPTURE_HELP)
     r.add_argument("--ca-cert", default=None,
                    help="PEM bundle for a private CA; makes the probe/API "
                         "transport VERIFY against it instead of trusting "
@@ -1910,6 +1994,10 @@ def _argparse_main(argv: Optional[list[str]] = None) -> int:
                      max_safety_incidents=args.max_safety_incidents,
                      max_rps=args.max_rps,
                      ca_cert=args.ca_cert,
+                     browser_sandbox=args.browser_sandbox,
+                     verify_target_tls=args.verify_target_tls,
+                     strict_egress=args.strict_egress,
+                     max_capture_bytes=args.max_capture_bytes,
                      capture_max_actions=args.capture_max_actions,
                      quiet=args.quiet, browser=args.browser,
                      proxy_server=args.proxy_server,
@@ -1931,8 +2019,15 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     app = typer.Typer(add_completion=False, help="SekuScan thin agent")
 
+    def _print_version(value: bool) -> None:
+        if value:
+            print(VERSION_LINE)
+            raise typer.Exit()
+
     @app.callback()
-    def _root() -> None:
+    def _root(version: bool = typer.Option(
+            False, "--version", is_eager=True, callback=_print_version,
+            help="print the agent and protocol versions")) -> None:
         """SekuScan thin agent: executes engine directives, observes, reports back."""
 
     @app.command()
@@ -1951,7 +2046,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                                        "(comma-separated; explicit authorization)"),
         profile: str = typer.Option("default", hidden=True),
         risk: int = typer.Option(1, "--risk",
-                                 help="1 read-only; 2 observed workflows; 3 bounded upload and command proof"),
+                                 help=RISK_HELP),
         max_depth: Optional[int] = typer.Option(
             None, "--max-depth",
             help="optional relative URL path-depth limit; omitted means unlimited"),
@@ -1984,11 +2079,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         max_seconds: Optional[int] = typer.Option(
             None, "--max-seconds",
             help="wall-clock allowance for the run; it ends as an operator "
-                 "stop does and the report says why"),
+                 "stop does and the report says why. Also enforced by the "
+                 "agent itself (30s after the limit if the engine has not "
+                 "stopped)"),
         max_steps: Optional[int] = typer.Option(
             None, "--max-actions",
             help="operator escape hatch; by default the run ends when there is "
                  "nothing left to test"),
+        browser_sandbox: str = typer.Option(
+            "auto", "--browser-sandbox", help=BROWSER_SANDBOX_HELP),
+        verify_target_tls: bool = typer.Option(
+            False, "--verify-target-tls", help=VERIFY_TLS_HELP),
+        strict_egress: bool = typer.Option(
+            False, "--strict-egress", help=STRICT_EGRESS_HELP),
+        max_capture_bytes: Optional[int] = typer.Option(
+            None, "--max-capture-bytes", help=MAX_CAPTURE_HELP),
         ca_cert: Optional[str] = typer.Option(
             None, "--ca-cert",
             help="PEM bundle for a private CA; makes the probe/API transport "
@@ -2170,6 +2275,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                          max_safety_incidents=max_safety_incidents,
                          max_rps=max_rps,
                          ca_cert=ca_cert,
+                         browser_sandbox=browser_sandbox,
+                         verify_target_tls=verify_target_tls,
+                         strict_egress=strict_egress,
+                         max_capture_bytes=max_capture_bytes,
                          capture_max_actions=capture_max_actions,
                          quiet=quiet, browser=browser,
                          username=username, password=password,

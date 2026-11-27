@@ -14,7 +14,9 @@ import html
 import json
 import logging
 import os
+import re
 import signal
+import sys
 import threading
 import time
 from typing import Any, Optional
@@ -219,6 +221,32 @@ def _release(handle: Any) -> None:
     log.debug("no close/dispose on %r", type(handle).__name__)
 
 
+SANDBOX_HELP = (
+    "The Chromium sandbox could not start on this host. On Ubuntu 23.10+/24.04 "
+    "run `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (or "
+    "run the agent as a dedicated user that unprivileged user namespaces are "
+    "allowed for); to run without the sandbox, pass `--browser-sandbox off`.")
+
+
+def launch_browser(launcher: Any, browser_name: str, mode: str,
+                   **launch_kwargs: Any) -> tuple[Any, bool]:
+    """Launch with the Chromium sandbox per `--browser-sandbox`; returns
+    `(browser, sandboxed)`. Playwright's own default is NO sandbox, so it is
+    asked for explicitly. `auto` falls back loudly, `on` refuses to."""
+    if mode == "off" or browser_name != "chromium":
+        return launcher.launch(**launch_kwargs), False
+    try:
+        return launcher.launch(chromium_sandbox=True, **launch_kwargs), True
+    except Exception as exc:
+        if "sandbox" not in str(exc).lower():
+            raise
+        if mode == "on":
+            raise RuntimeError(SANDBOX_HELP) from exc
+    print("warning: browser sandbox unavailable on this host; running "
+          "without it; --browser-sandbox on to require it", file=sys.stderr)
+    return launcher.launch(**launch_kwargs), False
+
+
 class BrowserSession:
     def __init__(self, headless: bool = True, timeout_ms: int = 15000,
                  capture: Optional[CaptureRules] = None,
@@ -258,8 +286,18 @@ class BrowserSession:
                  ca_cert_path: Optional[str] = None,
                  target_auth_username: Optional[str] = None,
                  target_auth_password: Optional[str] = None,
-                 allow_destructive: bool = False):
+                 allow_destructive: bool = False,
+                 browser_sandbox: str = "auto",
+                 verify_target_tls: bool = False,
+                 strict_egress: bool = False):
         self.headless = headless
+        self.browser_sandbox = browser_sandbox
+        #: Whether the browser that actually launched has its sandbox on.
+        self.sandboxed: Optional[bool] = None
+        self.strict_egress = strict_egress
+        # The operator opted in to checking the TARGET's certificate.
+        if verify_target_tls:
+            ignore_https_errors = False
         self.timeout_ms = timeout_ms
         self.allow_destructive = allow_destructive
         self.capture = capture or CaptureRules()
@@ -486,6 +524,8 @@ class BrowserSession:
                 "certPath": self.client_cert_path,
                 "keyPath": self.client_key_path,
             }]
+        if self.strict_egress:
+            kwargs["service_workers"] = "block"
         return kwargs
 
     @property
@@ -537,8 +577,9 @@ class BrowserSession:
         # context-level `proxy` unless the browser process itself was launched
         # with one (even a placeholder). The bundled Chromium honours
         # `new_context(proxy=...)` on its own, so no placeholder is used.
-        self.browser = launcher.launch(headless=self.headless,
-                                       args=["--disable-dev-shm-usage"])
+        self.browser, self.sandboxed = launch_browser(
+            launcher, self.browser_name, self.browser_sandbox,
+            headless=self.headless, args=["--disable-dev-shm-usage"])
         kwargs: dict[str, Any] = {
             "ignore_https_errors": self.ignore_https_errors,
             "viewport": {"width": 1280, "height": 900},
@@ -1361,6 +1402,34 @@ class BrowserSession:
             return
         route.fulfill(response=response)
 
+    def _guard_websockets(self) -> None:
+        """--strict-egress: close page WebSockets that leave the scope. Needs
+        Playwright's `route_web_socket`; without it they are not covered."""
+        from ..protocol import scoping
+
+        def ws_handler(ws: Any) -> None:
+            url = ws.url or ""
+            http_url = re.sub(r"^ws", "http", url, count=1)
+            if scoping.decide(
+                    http_url, self.scope_origins,
+                    deny_substrings=self.deny_substrings,
+                    allow_subdomains=self.allow_subdomains,
+                    max_depth=self.max_depth).allowed:
+                ws.connect_to_server()
+                return
+            self._record_egress({"url": url[:400], "type": "websocket",
+                                 "method": "GET", "blocked": True,
+                                 "safety_incident": False},
+                                count_safety_incident=False)
+            ws.close()
+
+        route_ws = getattr(self.context, "route_web_socket", None)
+        if route_ws is None:
+            log.warning("--strict-egress: this Playwright cannot intercept "
+                        "page WebSockets; they are NOT contained")
+            return
+        route_ws("**/*", ws_handler)
+
     def _install_egress_guard(self) -> None:
         """Credentials for the target, and only for the target.
 
@@ -1443,6 +1512,16 @@ class BrowserSession:
                 route.continue_(headers=sent)
                 return
             navigation = self._is_document_navigation(request)
+            if self.strict_egress and not navigation:
+                # --strict-egress: the page may not reach anything off-scope.
+                self._record_egress({"url": url[:400],
+                                     "type": request.resource_type,
+                                     "method": request.method,
+                                     "blocked": True,
+                                     "safety_incident": False},
+                                    count_safety_incident=False)
+                route.abort()
+                return
             # A `--deny` match (a logout link, a destructive action) is
             # refused outright, in every resource type - the operator's
             # promise is "never request URLs containing this substring"
@@ -1477,6 +1556,8 @@ class BrowserSession:
                         if k.lower() not in {h.lower() for h in headers}}
             route.continue_(headers=stripped)
 
+        if self.strict_egress:
+            self._guard_websockets()
         try:
             self.context.route("**/*", handler)
         except Exception as exc:  # pragma: no cover - routing unavailable
