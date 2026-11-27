@@ -1,7 +1,7 @@
 # Security policy
 
 Please report a vulnerability in the agent, or in SekuScan generally, to
-**security@sekuscan.com**. Include what you found, how to reproduce it and
+**security@sekuripy.hr**. Include what you found, how to reproduce it and
 which version you used (`pip show sekuscan-agent`).
 
 We acknowledge reports within two business days and keep you informed until

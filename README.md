@@ -274,4 +274,4 @@ source.
 
 ## Security
 
-Report vulnerabilities to security@sekuscan.com. See [SECURITY.md](SECURITY.md).
+Report vulnerabilities to security@sekuripy.hr. See [SECURITY.md](SECURITY.md).
