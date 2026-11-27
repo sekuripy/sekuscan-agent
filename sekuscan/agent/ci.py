@@ -145,7 +145,7 @@ class _Completed:
         self.stderr = stderr
 
 
-def _run_bounded(argv: list[str], timeout_s: float) -> "_Completed":
+def _run_bounded(argv: "list[str] | str", timeout_s: float) -> "_Completed":
     """`subprocess.run(capture_output=True)` with a ceiling on the OUTPUT.
 
     The stock call bounds only TIME. This bounds bytes as well, and kills the
@@ -199,12 +199,17 @@ def resolve_secret(value: Optional[str]) -> Optional[str]:
         raise SecretResolutionError("empty %s credential command"
                                     % SECRET_COMMAND_PREFIX)
     try:
-        argv = shlex.split(argv_text)
+        # Windows splits a command line itself (CreateProcess), with rules
+        # POSIX shlex does not follow: shlex eats the backslashes of
+        # `C:\Tools\vault.exe`. Still no shell on either.
+        words = shlex.split(argv_text, posix=os.name != "nt")
     except ValueError as exc:
         raise SecretResolutionError("unparseable credential command: %s" % exc)
-    if not argv:
+    if not words:
         raise SecretResolutionError("empty %s credential command"
                                     % SECRET_COMMAND_PREFIX)
+    argv = argv_text if os.name == "nt" else words
+    program = words[0].strip('"')
     try:
         # `capture_output=True` would buffer all output in memory, and the
         # timeout bounds only how long a command runs, not how much it
@@ -213,21 +218,21 @@ def resolve_secret(value: Optional[str]) -> Optional[str]:
         # misconfigured command, not a credential.
         done = _run_bounded(argv, SECRET_COMMAND_TIMEOUT_S)
     except FileNotFoundError:
-        raise SecretResolutionError("credential command not found: %s" % argv[0])
+        raise SecretResolutionError("credential command not found: %s" % program)
     except subprocess.TimeoutExpired:
         raise SecretResolutionError(
             "credential command timed out after %ds: %s"
-            % (SECRET_COMMAND_TIMEOUT_S, argv[0]))
+            % (SECRET_COMMAND_TIMEOUT_S, program))
     if done.returncode != 0:
         # stderr, never stdout: on failure stdout may still hold a partial
         # secret, and this string reaches logs.
         raise SecretResolutionError(
             "credential command failed (exit %d): %s: %s"
-            % (done.returncode, argv[0], (done.stderr or "").strip()[:200]))
+            % (done.returncode, program, (done.stderr or "").strip()[:200]))
     secret = (done.stdout or "").rstrip("\n")
     if not secret:
         raise SecretResolutionError(
-            "credential command produced nothing: %s" % argv[0])
+            "credential command produced nothing: %s" % program)
     return secret
 
 

@@ -9,6 +9,8 @@ run, never quietly hand back "no credential".
 """
 
 import os
+import shlex
+import subprocess
 import sys
 
 from tests import pytest_style
@@ -18,11 +20,14 @@ from sekuscan.agent import ci
 
 def _cmd(script):
     """A `cmd:` value that runs THIS interpreter - no shell, no fixtures."""
-    return "cmd:%s -c %s" % (sys.executable, _quote(script))
+    return "cmd:%s -c %s" % (_quote(sys.executable), _quote(script))
 
 
 def _quote(text):
-    return "'" + text.replace("'", "'\\''") + "'"
+    """One argument, quoted the way the platform's command line reads it."""
+    if os.name == "nt":
+        return subprocess.list2cmdline([text])
+    return shlex.quote(text)
 
 
 def test_a_plain_value_is_returned_unchanged():
