@@ -29,6 +29,7 @@ The agent only makes outbound connections. Nothing connects to it.
 Linux and macOS:
 
 ```
+sudo apt install python3-venv libatomic1    # Ubuntu and Debian only
 python3 -m venv ~/sekuscan-agent
 ~/sekuscan-agent/bin/pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.4/sekuscan_agent-0.2.4-py3-none-any.whl
 ~/sekuscan-agent/bin/playwright install --with-deps chromium

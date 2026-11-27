@@ -28,3 +28,34 @@ jobs:
       - run: pip install -c requirements.lock '.[test]'
       - run: playwright install --with-deps chromium
       - run: python -m pytest -q
+
+  # The README's install lines, run as written on fresh machines that have
+  # only python3 and sudo. The wheel URL is swapped for this checkout.
+  readme-install:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: A fresh machine with a normal user
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 sudo ca-certificates
+          echo 'APT::Get::Assume-Yes "true";' > /etc/apt/apt.conf.d/90yes
+          useradd -m ana
+          echo "ana ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ana
+          cp -r . /tmp/src
+          chown -R ana /tmp/src
+      - name: The README's Linux install lines
+        run: |
+          awk '/^Linux and macOS:/{f=1} f&&/^```$/{n++; if(n==2) exit; next} f&&n==1' README.md \
+            | sed -E 's#https://github.com/[^ ]+\.whl#/tmp/src#' > /tmp/install.sh
+          cat /tmp/install.sh
+          su - ana -c 'set -ex; . /tmp/install.sh'
+          su - ana -c '~/sekuscan-agent/bin/sekuscan-agent --version'
+          su - ana -c '~/sekuscan-agent/bin/python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); print(\"chromium starts\")"'
