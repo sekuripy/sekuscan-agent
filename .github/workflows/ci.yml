@@ -32,11 +32,15 @@ jobs:
   # The README's install lines, run as written on fresh machines that have
   # only python3 and sudo. The wheel URL is swapped for this checkout.
   readme-install:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12"]
+        runner: [ubuntu-24.04]
+        include:
+          - image: "ubuntu:24.04"
+            runner: ubuntu-24.04-arm
     container: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,3 +63,66 @@ jobs:
           su - ana -c 'set -ex; . /tmp/install.sh'
           su - ana -c '~/sekuscan-agent/bin/sekuscan-agent --version'
           su - ana -c '~/sekuscan-agent/bin/python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); print(\"chromium starts\")"'
+
+  # macOS has no fresh-machine image on GitHub: this runs the README's lines
+  # as written (minus the Ubuntu/Debian apt line) on the stock runner.
+  readme-install-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The README's Linux and macOS install lines
+        run: |
+          awk '/^Linux and macOS:/{f=1} f&&/^```$/{n++; if(n==2) exit; next} f&&n==1' README.md \
+            | grep -v '^sudo apt ' \
+            | sed -E "s#https://github.com/[^ ]+\.whl#$GITHUB_WORKSPACE#" > "$RUNNER_TEMP/install.sh"
+          cat "$RUNNER_TEMP/install.sh"
+          cd "$RUNNER_TEMP" && bash -ex install.sh
+          ~/sekuscan-agent/bin/sekuscan-agent --version
+          ~/sekuscan-agent/bin/python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); print('chromium starts')"
+
+  # The README's PowerShell lines, run in PowerShell.
+  readme-install-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Extract the README's PowerShell install lines
+        shell: bash
+        run: |
+          { echo '$ErrorActionPreference = "Stop"; $PSNativeCommandUseErrorActionPreference = $true'
+            awk '/^Windows \(PowerShell\):/{f=1} f&&/^```$/{n++; if(n==2) exit; next} f&&n==1' README.md \
+              | sed -E 's#https://github.com/[^ ]+\.whl#$env:GITHUB_WORKSPACE#'
+          } > "$RUNNER_TEMP/install.ps1"
+          cat "$RUNNER_TEMP/install.ps1"
+      - name: Run them
+        shell: pwsh
+        run: |
+          Set-Location $env:RUNNER_TEMP
+          & .\install.ps1
+          sekuscan-agent\Scripts\sekuscan-agent --version
+          sekuscan-agent\Scripts\python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); print('chromium starts')"
+
+  # The README's docker command, with the image built from this commit. The
+  # scan arguments are swapped for --version (CI has no API key), then the
+  # same mount and user flags must give a report folder the user owns.
+  readme-docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker build -t sekuscan-agent:ci .
+      - name: The README's docker command
+        run: |
+          awk '/^### Docker/{f=1} f&&/^```$/{n++; if(n==2) exit; next} f&&n==1' README.md \
+            | sed -e ':a' -e '/\\$/N; s/\\\n//; ta' > docker.sh
+          cat docker.sh
+          mkdir -p "$RUNNER_TEMP/work" && cd "$RUNNER_TEMP/work"
+          sed -E 's#ghcr\.io/sekuripy/sekuscan-agent:v[^ ]+ .*#sekuscan-agent:ci --version#' "$GITHUB_WORKSPACE/docker.sh" > version.sh
+          sed -E "s#ghcr\.io/sekuripy/sekuscan-agent:v[^ ]+ .*#--entrypoint sh sekuscan-agent:ci -c 'touch /report/ok'#" "$GITHUB_WORKSPACE/docker.sh" > write.sh
+          bash -ex version.sh
+          bash -ex write.sh
+          test -O report/ok && echo "report folder written, owned by $(id -un)"
