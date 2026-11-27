@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.5
+
+Changes from a clean-machine install and scan, done the way a customer would.
+
+- README: on Ubuntu and Debian, install `python3-venv` and `libatomic1` first.
+  A fresh system lacks both, and the install stopped at the first line.
+- CI runs the README's install lines on fresh Ubuntu 22.04, Ubuntu 24.04 and
+  Debian 12 machines.
+- The terminal no longer shows a line for every request to the engine.
+- `engine ok` no longer prints `None` when the engine does not report a
+  version.
+
 ## 0.2.4
 
 Changes from a third external review.

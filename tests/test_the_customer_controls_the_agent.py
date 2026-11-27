@@ -291,6 +291,13 @@ def test_max_seconds_ends_the_run_locally_with_a_report():
     assert seen["code"] == 0 and seen["trace"]["stop_reason"].startswith("wall-time budget")
 
 
+def test_the_terminal_is_not_flooded_with_one_line_per_engine_request():
+    import logging
+    logging.getLogger("httpx").setLevel(logging.NOTSET)
+    _drive(CaptureRules())
+    assert logging.getLogger("httpx").level >= logging.WARNING
+
+
 def test_strict_egress_fails_closed_without_websocket_interception():
     s = BrowserSession(scope_origins=["http://target.test/"], strict_egress=True)
     s.egress, s.safety_incidents = [], 0

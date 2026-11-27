@@ -701,6 +701,9 @@ def _run_agent(engine: str, api_key: str, target: str, scope: list[str],
     logging.basicConfig(
         level=logging.WARNING if quiet else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    # httpx logs every engine request at INFO: thousands of lines per scan.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     # The API key and the run token both travel to this url on every request,
     # so a plaintext `http://` engine address that is not loopback would hand
@@ -772,8 +775,10 @@ def _run_agent(engine: str, api_key: str, target: str, scope: list[str],
                                          proxy_bypass, ca_cert))
     try:
         health = client.health()
-        _say(quiet, f"engine ok: {health.get('engine_version')} "
-                    f"(protocol {health.get('protocol_version')})")
+        version = " ".join(str(v) for v in (
+            health.get("engine_version"),
+            health.get("protocol_version") and "(protocol %s)" % health["protocol_version"]) if v)
+        _say(quiet, ("engine ok: " + version) if version else "engine ok")
     except Exception as exc:
         print(f"error: cannot reach engine at {engine}: {exc}", file=sys.stderr)
         return 2
