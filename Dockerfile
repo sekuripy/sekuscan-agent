@@ -3,10 +3,9 @@
 FROM mcr.microsoft.com/playwright/python:v1.65.2-noble
 
 COPY . /src
-RUN python3 -m venv /opt/venv \
- && /opt/venv/bin/pip install --no-cache-dir -c /src/requirements.lock /src \
+# The image has no venv module; its own Playwright is in the system Python.
+RUN pip3 install --no-cache-dir --break-system-packages -c /src/requirements.lock /src \
  && rm -rf /src
-ENV PATH=/opt/venv/bin:$PATH
 
 # Not root: the browser sandbox cannot run as root.
 USER pwuser

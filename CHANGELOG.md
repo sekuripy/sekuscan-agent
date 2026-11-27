@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- The container image builds (0.2.0's did not); CI installs Chromium for the
+  tests that drive it. No change to the agent itself.
+
 ## 0.2.0
 
 Changes from an external review of the agent.

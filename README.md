@@ -20,15 +20,15 @@ verify and install:
 
 ```
 sha256sum -c --ignore-missing SHA256SUMS
-gh attestation verify sekuscan_agent-0.2.0-py3-none-any.whl --repo sekuripy/sekuscan-agent
-pip install sekuscan_agent-0.2.0-py3-none-any.whl -c requirements.lock
+gh attestation verify sekuscan_agent-0.2.1-py3-none-any.whl --repo sekuripy/sekuscan-agent
+pip install sekuscan_agent-0.2.1-py3-none-any.whl -c requirements.lock
 playwright install chromium
 ```
 
 Or directly, without the verification steps:
 
 ```
-pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.0/sekuscan_agent-0.2.0-py3-none-any.whl
+pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.1/sekuscan_agent-0.2.1-py3-none-any.whl
 ```
 
 `requirements.lock` (attached to each release) pins the exact versions of the
@@ -45,7 +45,7 @@ Container image, with Chromium included (`ghcr.io/sekuripy/sekuscan-agent`):
 
 ```
 docker run --rm --ipc=host -e SEKUSCAN_API_KEY \
-  ghcr.io/sekuripy/sekuscan-agent:v0.2.0 run --engine https://api.sekuscan.com \
+  ghcr.io/sekuripy/sekuscan-agent:v0.2.1 run --engine https://api.sekuscan.com \
   --target https://app.example.com/ --out /tmp/report
 ```
 
@@ -91,7 +91,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: |
-          pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.0/sekuscan_agent-0.2.0-py3-none-any.whl
+          pip install https://github.com/sekuripy/sekuscan-agent/releases/download/v0.2.1/sekuscan_agent-0.2.1-py3-none-any.whl
           playwright install --with-deps chromium
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: ./start-the-app-under-test.sh &
