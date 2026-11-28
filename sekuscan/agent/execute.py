@@ -2235,11 +2235,12 @@ def _outcome_from_async_result(directive: Directive, spec: dict[str, Any],
 def _not_batchable(directive: Directive) -> Optional[str]:
     """Why `directive` cannot go through the concurrent path, or None.
 
-    That path sends a plain primary-session HTTP request and nothing else, so
+    That path sends a primary-session HTTP request, or an anonymous one from a
+    fresh cookie-less context of its own (`async_probe`), and nothing else, so
     anything it would silently ignore or mis-send is refused instead."""
     if directive.kind != "probe_http":
         return "only probe_http directives may be batched"
-    if (directive.auth_profile != "primary" or directive.anonymous
+    if (directive.auth_profile != "primary"
             or directive.capture_from is not None or directive.raw_query
             or directive.browser_context or getattr(directive, "upload_fixture", None)):
         return "this probe cannot be batched"

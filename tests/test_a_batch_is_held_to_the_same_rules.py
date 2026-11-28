@@ -38,13 +38,21 @@ class TestABatchIsHeldToTheSameRules(unittest.TestCase):
     def test_only_a_plain_primary_probe_is_batched(self):
         for fields in ({"kind": "navigate", "method": "DELETE", "effect": "write"},
                        {"kind": "probe_http", "auth_profile": "secondary"},
-                       {"kind": "probe_http", "anonymous": True},
                        {"kind": "probe_http", "raw_query": True},
                        {"kind": "probe_http", "browser_context": True}):
             outcome, worker = self._batch(**fields)
             self.assertFalse(outcome.action_result.ok, fields)
             self.assertIn("refused", outcome.action_result.error, fields)
             worker.dispatch_batch.assert_not_called()
+
+    def test_an_anonymous_probe_is_batched_in_a_context_of_its_own(self):
+        """The engine batches anonymous reads and the worker gives each its own
+        cookie-less context. Refusing them here failed every anonymous
+        baseline a check compares against, silently."""
+        outcome, worker = self._batch(kind="probe_http", anonymous=True)
+        worker.dispatch_batch.assert_called_once()
+        specs = worker.dispatch_batch.call_args[0][0]
+        self.assertTrue(specs[0]["anonymous"])
 
     def test_a_transport_upload_needs_risk_2(self):
         directive = Directive(id="d", kind="probe_http", method="POST", url=URL, effect="read",

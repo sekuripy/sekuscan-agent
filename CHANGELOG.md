@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.8
+
+- A batch of requests runs requests without a session again. Each one gets
+  its own empty browser context, so it carries no cookies. Agents 0.2.4 to
+  0.2.7 refused these requests, and every check that compares a
+  logged-in response with an anonymous one quietly found nothing.
+
 ## 0.2.7
 
 - `sekuscan-agent vulnerableapp-findings` prints a report's findings in the
